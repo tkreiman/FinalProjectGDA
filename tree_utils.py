@@ -182,14 +182,27 @@ def analyze_tree_dists(filename):
     good_to_bad_tree_dist /= 25
     return intra_good_tree_dist, good_to_bad_tree_dist
 
-# X, y, DATA_MIN, DATA_MAX = load_data()
-# NUM_TRAIN = int(len(X) * 0.50)
 
+def random_tree_fromdata(X, y):
+    # random gaussian array of shape X.shape with values between pix_min and pix_max
+    X_rand = np.random.randn(*X.shape) * 3
+
+    # random list of digits between 0 and 9
+    y_rand = np.random.randint(0, 10, y.shape[0])
+    clf = tree.DecisionTreeClassifier(max_leaf_nodes=10)
+    clf = clf.fit(X_rand,y_rand)
+
+    nw = build_newick_from_dt(clf, match_class_leaves=True)
+    return nw
+
+X, y, DATA_MIN, DATA_MAX = load_data()
+NUM_TRAIN = int(len(X) * 0.50)
+print(random_tree_fromdata(X, y))
 # write_to_tree_dist_program_input()
 
-path_to_output_file = "../gtp_170317/outputs/output6.txt"
-good_dist, bad_dist = analyze_tree_dists(path_to_output_file)
-print("avg intra_good_tree_dist:{}, avg good_to_bad_tree_dist: {}".format(good_dist, bad_dist))
+#path_to_output_file = "../gtp_170317/outputs/output6.txt"
+#good_dist, bad_dist = analyze_tree_dists(path_to_output_file)
+#print("avg intra_good_tree_dist:{}, avg good_to_bad_tree_dist: {}".format(good_dist, bad_dist))
 
 
 
