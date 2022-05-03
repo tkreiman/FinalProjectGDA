@@ -1,3 +1,4 @@
+from sys import path_importer_cache
 import numpy as np
 import pandas as pd
 import math
@@ -16,9 +17,6 @@ def load_data():
     DATA_MIN = np.floor(np.min(X))
     DATA_MAX = np.ceil(np.max(X))
     return X, y, DATA_MIN, DATA_MAX
-
-X, y, DATA_MIN, DATA_MAX = load_data()
-NUM_TRAIN = int(len(X) * 0.50)
 
 def bootstrap_sample(n_sets,num_train_samples,len_data):
     data= []
@@ -53,11 +51,40 @@ def calc_edge_lengths_from_dt(clf):
     return lengths    
 
 curr_leaf_num = 0
-def build_newick_from_dt(clf, add_leaf_class_edges = False):
+def build_newick_from_dt(clf, add_leaf_class_edges = False, match_class_leaves = False):
     global curr_leaf_num
     curr_leaf_num = 0
     children_left = clf.tree_.children_left #children_left[i] gives the id of the left child of node i
     children_right = clf.tree_.children_right
+    #print("gini: {}".format(clf.tree_.impurity))
+    if match_class_leaves:
+        leaf_node_ids = [i for i in range(len(clf.tree_.children_left)) if clf.tree_.children_left[i] == -1]
+        def leaf_purity_sort_func(e):
+            return clf.tree_.impurity[e]
+        leaf_node_ids.sort(key=leaf_purity_sort_func)
+        leaf_class_mapping = {}
+        #print("leaf node ids: {}".format(leaf_node_ids))
+        for leaf_id in leaf_node_ids:
+            for _ in range(len(clf.tree_.value[leaf_id][0])):
+                leaf_class = np.argmax(clf.tree_.value[leaf_id][0])
+                if leaf_class not in leaf_class_mapping.values():
+                    leaf_class_mapping[leaf_id] = leaf_class
+                    break
+                else:
+                    #print("leaf class max issue: {}".format(clf.tree_.value[leaf_id][0]))
+                    clf.tree_.value[leaf_id][0][leaf_class] = 0
+                    continue
+        bad_leaf_count = 0
+        for leaf_id in leaf_node_ids:
+            if leaf_id not in leaf_class_mapping.keys():
+                bad_leaf_count += 1
+                for i in range(len(clf.classes_)):
+                    if i not in leaf_class_mapping.values():
+                        leaf_class_mapping[leaf_id] = i
+        print("this decision tree has {} bad leaves".format(bad_leaf_count))
+
+    #print("class labels: {}".format(clf.classes_))
+    
     lengths = calc_edge_lengths_from_dt(clf) #lengths[i] gives the length of the edge to node i from parent
     lengths[0] = 0
     def build_newick_tree_rec(node_id):
@@ -77,6 +104,8 @@ def build_newick_from_dt(clf, add_leaf_class_edges = False):
                 leaf_str += "):{}".format(lengths[node_id])
                 curr_leaf_num  += 1
                 return leaf_str     
+            elif match_class_leaves:
+                return "{}:{}".format(leaf_class_mapping[node_id], lengths[node_id])
             else:
                 return "{}:{}".format(node_id, lengths[node_id])
         else:
@@ -99,9 +128,14 @@ def find_good_trees(bootstrap_number):
         ytst = y[indices[i][1]]
         dt = tree.DecisionTreeClassifier(max_leaf_nodes=10)
         dt = dt.fit(Xtr,ytr)
-        nw = build_newick_from_dt(dt, add_leaf_class_edges=True)
+        nw = build_newick_from_dt(dt, match_class_leaves=True)
         forest.append([nw, dt, dt.score(Xtst,ytst)])
     return forest
+
+# def newick_to_sklearn(newick_str, num_leaves):
+#     clf = tree.DecisionTreeClassifier(max_leaf_nodes=num_leaves)
+
+
 
 
 def write_to_tree_dist_program_input():
@@ -112,11 +146,50 @@ def write_to_tree_dist_program_input():
     sorted_idxs = np.argsort(scores)
     bad_idxs = sorted_idxs[:5]
     good_idxs = sorted_idxs[-5:]
-    with open("../gtp_170317/example/dt_performance_test", "w") as f:
+    print("bad scores:{}".format(scores[bad_idxs]))
+    print("good scores:{}".format(scores[good_idxs]))
+    with open("../gtp_170317/example/dt_no_class_edges_3", "w") as f:
         for i in range(len(good_idxs)):
             f.write(nws[good_idxs[i]])
             f.write('\n')
         for i in range(len(bad_idxs)):
             f.write(nws[bad_idxs[i]])
             f.write('\n')
+
+
     
+def analyze_tree_dists(filename):
+    dist_matrix = np.zeros((10, 10))
+    with open(filename, "r") as f:
+        for line in f:
+            if line == "\n":
+                continue
+            line = line.split("\t")
+            t1 = int(line[0])
+            t2 = int(line[1])
+            dist = float(line[2])
+            dist_matrix[t1][t2] = dist
+            dist_matrix[t2][t1] = dist
+    print(dist_matrix)
+    intra_good_tree_dist = 0
+    good_to_bad_tree_dist = 0
+    for i in range(5):
+        for j in range(5):
+            intra_good_tree_dist += dist_matrix[i][j]
+        for j in range(5, 10):
+            good_to_bad_tree_dist += dist_matrix[i][j]
+    intra_good_tree_dist /= 20
+    good_to_bad_tree_dist /= 25
+    return intra_good_tree_dist, good_to_bad_tree_dist
+
+# X, y, DATA_MIN, DATA_MAX = load_data()
+# NUM_TRAIN = int(len(X) * 0.50)
+
+# write_to_tree_dist_program_input()
+
+path_to_output_file = "../gtp_170317/outputs/output6.txt"
+good_dist, bad_dist = analyze_tree_dists(path_to_output_file)
+print("avg intra_good_tree_dist:{}, avg good_to_bad_tree_dist: {}".format(good_dist, bad_dist))
+
+
+
