@@ -132,6 +132,14 @@ def find_good_trees(bootstrap_number):
         forest.append([nw, dt, dt.score(Xtst,ytst)])
     return forest
 
+def get_data_class_rep(X, y, classes):
+    class_rep_info = np.zeros(len(classes), X.shape[1])
+    for i, c in enumerate(classes):
+        idxs = np.where(y == c, True, False)
+        X_cls = X[idxs]
+        class_rep_info[i] = np.mean(X_cls, axis=0)
+    return class_rep_info
+
 # def newick_to_sklearn(newick_str, num_leaves):
 #     clf = tree.DecisionTreeClassifier(max_leaf_nodes=num_leaves)
 
