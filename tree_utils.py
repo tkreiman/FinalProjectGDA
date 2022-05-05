@@ -1,3 +1,5 @@
+from audioop import avg
+from random import Random
 from sys import path_importer_cache
 import numpy as np
 import pandas as pd
@@ -9,6 +11,14 @@ from numpy import random
 import matplotlib.pyplot as plt
 
 from sklearn.datasets import load_digits
+
+class TreeNode:
+    def __init__(self, leafID, children, lengths):
+        self.leafID = leafID
+        self.children = children
+        self.lengths = lengths
+        if self.children is not None or self.lengths is not None:
+            assert(len(self.children) == len(self.lengths))
 
 def load_data():
     digits = load_digits()
@@ -118,36 +128,130 @@ def build_newick_from_dt(clf, add_leaf_class_edges = False, match_class_leaves =
                 
     return build_newick_tree_rec(node_id = 0)
 
-def find_good_trees(bootstrap_number):
-    indices = bootstrap_sample(bootstrap_number,NUM_TRAIN,len(X))
+def find_good_trees(bootstrap_number, random=False):
     forest = []
-    for i in range(bootstrap_number):
-        Xtr = X[indices[i][0]]
-        ytr = y[indices[i][0]]
-        Xtst = X[indices[i][1]]
-        ytst = y[indices[i][1]]
-        dt = tree.DecisionTreeClassifier(max_leaf_nodes=10)
-        dt = dt.fit(Xtr,ytr)
-        nw = build_newick_from_dt(dt, match_class_leaves=True)
-        forest.append([nw, dt, dt.score(Xtst,ytst)])
+    if random:
+        for i in range(bootstrap_number):
+            dt = random_tree_fromdata(X, y)
+            nw = build_newick_from_dt(dt, match_class_leaves=True)
+            forest.append([nw, dt, dt.score(X,y)])
+    else:
+        indices = bootstrap_sample(bootstrap_number,NUM_TRAIN,len(X))
+        for i in range(bootstrap_number):
+            Xtr = X[indices[i][0]]
+            ytr = y[indices[i][0]]
+            Xtst = X[indices[i][1]]
+            ytst = y[indices[i][1]]
+            dt = tree.DecisionTreeClassifier(max_leaf_nodes=10)
+            dt = dt.fit(Xtr,ytr)
+            nw = build_newick_from_dt(dt, match_class_leaves=True)
+            forest.append([nw, dt, dt.score(Xtst,ytst)])
     return forest
 
 def get_data_class_rep(X, y, classes):
-    class_rep_info = np.zeros(len(classes), X.shape[1])
+    class_rep_info = np.zeros((len(classes), X.shape[1]), dtype=X.dtype)
     for i, c in enumerate(classes):
         idxs = np.where(y == c, True, False)
         X_cls = X[idxs]
         class_rep_info[i] = np.mean(X_cls, axis=0)
     return class_rep_info
 
-# def newick_to_sklearn(newick_str, num_leaves):
+#def get_mean_tree()
+
+def find_matching_parens_idx(string):
+    #print(string)
+    stack_height = 1
+    for i in range(len(string)):
+        #print(stack_height)
+        if string[i] == '(':
+            stack_height += 1
+        elif string[i] == ')':
+            stack_height -= 1
+        if stack_height == 0:
+            return i
+        else:
+            i += 1
+    raise IndexError("no matching parens found!")
+
+def get_len_and_next_idx(newick_str, start_idx):
+    j = start_idx
+    while j <= len(newick_str):
+        if j == len(newick_str) or newick_str[j] == ',':
+            length = float(newick_str[start_idx:j])
+            return length, j + 1
+        else:
+            j += 1
+
+def newick_to_tree_rec(newick_str):
+    children = []
+    lengths = []
+    i = 0
+    #print(newick_str)
+    while i < len(newick_str):
+        #print("curr i: {}, curr char: {}".format(i, newick_str[i]))
+        if newick_str[i] == "(":
+            end_idx = find_matching_parens_idx(newick_str[i+1:])
+            #print("i:{}, end idx:{}".format(newick_str[i + 1], end_idx))
+            childNode = newick_to_tree_rec(newick_str[i+1:i+1+end_idx])
+            children.append(childNode)
+            length, next_idx = get_len_and_next_idx(newick_str, i+1+end_idx + 3)
+            lengths.append(length)
+            i = next_idx
+        else:
+            leafID = newick_str[i]
+            leafNode = TreeNode(leafID=leafID,children=None,lengths=None)
+            children.append(leafNode)
+            #print("curr str: {}".format(newick_str))
+            length, next_idx = get_len_and_next_idx(newick_str, i + 2)
+            lengths.append(length)
+            i = next_idx
+    return TreeNode(leafID=-1, children=children, lengths=lengths)
+def newick_to_tree(newick_str):
+    return newick_to_tree_rec(newick_str[1:-1])
+
+#def find_partition(children, lengths):
+
+def check_tree(node:TreeNode, level=0):
+    if node.children is None:
+        num_children = 0
+    else:
+        num_children = len(node.children)
+        for i in range(num_children):
+            check_tree(node.children[i], level + 1)
+    print("level: {}, num_children: {}".format(level, num_children))
+    
+
+def convert_tree_to_binary_rec(node:TreeNode):
+    if node.children is None:
+        return node
+    elif len(node.children) == 2:
+        new_left_node = convert_tree_to_binary_rec(node.children[0])
+        new_right_node = convert_tree_to_binary_rec(node.children[1])
+        return TreeNode(leafID=-1, children=[new_left_node, new_right_node], lengths=node.lengths)
+    elif len(node.children) > 2:
+        print("too many children")
+        new_left_node = convert_tree_to_binary_rec(node.children[0])
+        new_right_node = TreeNode(leafID=-1, children=node.children[1:], lengths=node.lengths[1:])
+        new_right_node = convert_tree_to_binary_rec(new_right_node)
+        new_children = [new_left_node, new_right_node]
+        #total_lengths = node.lengths[0] = sum(new_binary_node.lengths)
+        #length1 = node.lengths[0]/ 
+        #TODO: might come up with better length reweighing scheme
+        new_lengths = [node.lengths[0], np.mean(node.lengths[1:])] 
+        #print(len(new_children))
+        return TreeNode(leafID=-1, children=new_children, lengths=new_lengths)
+
+# def binary_tree_to_sklearn(node:TreeNode, class_reps):
 #     clf = tree.DecisionTreeClassifier(max_leaf_nodes=num_leaves)
 
 
 
+# def newick_to_sklearn(newick_str, num_leaves):
+#     tree = 
+#     
 
-def write_to_tree_dist_program_input():
-    forest_test = find_good_trees(50)
+def write_to_tree_dist_program_input(write_all=False, random=False):
+    forest_test = find_good_trees(500, random=random)
     nws, trees, scores = zip(*forest_test)
     print(min(scores), max(scores))
     scores = np.array(scores)
@@ -156,19 +260,23 @@ def write_to_tree_dist_program_input():
     good_idxs = sorted_idxs[-5:]
     print("bad scores:{}".format(scores[bad_idxs]))
     print("good scores:{}".format(scores[good_idxs]))
-    with open("../gtp_170317/example/dt_no_class_edges_3", "w") as f:
-        for i in range(len(good_idxs)):
-            f.write(nws[good_idxs[i]])
-            f.write('\n')
-        for i in range(len(bad_idxs)):
-            f.write(nws[bad_idxs[i]])
-            f.write('\n')
-
-
-    
+    with open("../gtp_170317/example/random_trees2", "w") as f:
+        if write_all:
+            for i in range(len(nws)):
+                f.write(nws[i])
+                f.write('\n')
+        else:
+            for i in range(len(good_idxs)):
+                f.write(nws[good_idxs[i]])
+                f.write('\n')
+            for i in range(len(bad_idxs)):
+                f.write(nws[bad_idxs[i]])
+                f.write('\n')
+  
 def analyze_tree_dists(filename):
     dist_matrix = np.zeros((10, 10))
     with open(filename, "r") as f:
+        num_lines = len(f.readlines())
         for line in f:
             if line == "\n":
                 continue
@@ -179,6 +287,7 @@ def analyze_tree_dists(filename):
             dist_matrix[t1][t2] = dist
             dist_matrix[t2][t1] = dist
     print(dist_matrix)
+    print("distances to good mean tree from random trees: {}".format(dist_matrix[0]))
     intra_good_tree_dist = 0
     good_to_bad_tree_dist = 0
     for i in range(5):
@@ -190,7 +299,6 @@ def analyze_tree_dists(filename):
     good_to_bad_tree_dist /= 25
     return intra_good_tree_dist, good_to_bad_tree_dist
 
-
 def random_tree_fromdata(X, y):
     # random gaussian array of shape X.shape with values between pix_min and pix_max
     X_rand = np.random.randn(*X.shape) * 3
@@ -199,18 +307,25 @@ def random_tree_fromdata(X, y):
     y_rand = np.random.randint(0, 10, y.shape[0])
     clf = tree.DecisionTreeClassifier(max_leaf_nodes=10)
     clf = clf.fit(X_rand,y_rand)
+    #nw = build_newick_from_dt(clf, match_class_leaves=True)
+    return clf
 
-    nw = build_newick_from_dt(clf, match_class_leaves=True)
-    return nw
+# X, y, DATA_MIN, DATA_MAX = load_data()
+# NUM_TRAIN = int(len(X) * 0.50)
+# print(random_tree_fromdata(X, y))
+# classes = np.arange(10)
+# class_reps = get_data_class_rep(X=X, y=y, classes=classes)
+#print("class rep info: {}".format(class_reps))
+#write_to_tree_dist_program_input(write_all=True,random=True)
 
-X, y, DATA_MIN, DATA_MAX = load_data()
-NUM_TRAIN = int(len(X) * 0.50)
-print(random_tree_fromdata(X, y))
-# write_to_tree_dist_program_input()
-
-#path_to_output_file = "../gtp_170317/outputs/output6.txt"
-#good_dist, bad_dist = analyze_tree_dists(path_to_output_file)
+# path_to_output_file = "../gtp_170317/outputs/random_output.txt"
+# good_dist, bad_dist = analyze_tree_dists(path_to_output_file)
 #print("avg intra_good_tree_dist:{}, avg good_to_bad_tree_dist: {}".format(good_dist, bad_dist))
 
-
+test_newick_str = "((((((1:12.7972272028,8:16.19448754):0.0003516433,2:13.9056052921):0.0004681324,3:9.9702006682,4:13.1786666231,6:15.5331370117):0.000904761,(5:15.0930987257,7:10.6461528477):0.000280585):0.0016585607,9:19.9632479158):0.0048466613,0:6.2155927179)"
+test_tree = newick_to_tree(test_newick_str)
+check_tree(test_tree)
+print("----------------------------")
+test_binary_tree = convert_tree_to_binary_rec(test_tree)
+check_tree(test_binary_tree)
 
