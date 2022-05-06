@@ -17,6 +17,7 @@ class TreeNode:
         self.binary = binary
         self.threshold = None
         self.feature = None
+        self.idx = None
         if self.children is not None or self.lengths is not None:
             assert(len(self.children) == len(self.lengths))
     def get_num_nodes(self):
@@ -26,7 +27,7 @@ class TreeNode:
                 num_nodes += self.children[i].get_num_nodes()
         return num_nodes
     
-    def get_leaves(self, leaf_nums=[]):
+    def get_leaves(self, leaf_nums):
         if self.children is None:
             leaf_nums.append(self.leafID)
         else:
@@ -38,7 +39,7 @@ class TreeNode:
         if not self.binary:
             raise Exception("tree not binary!")
         if self.children:
-            return self.children[0].get_leaves()
+            return self.children[0].get_leaves([])
         else:
             raise Exception("leaf node has no children")
 
@@ -46,7 +47,7 @@ class TreeNode:
         if not self.binary:
             raise Exception("tree not binary!")
         if self.children:
-            return self.children[1].get_leaves()
+            return self.children[1].get_leaves([])
         else:
             raise Exception("leaf node has no children")
 
@@ -75,6 +76,43 @@ class TreeNode:
                 num_right += 1
         return num_right / len(preds)
 
+    def _add_nodes_to_list(self, node_list):
+        node_list.append(self)
+        if self.children:
+            self.children[0]._add_nodes_to_list(node_list)
+            self.children[1]._add_nodes_to_list(node_list)
+
+
+    def label_tree(self):
+        node_list = []
+        self._add_nodes_to_list(node_list)
+        assert(len(node_list) == self.get_num_nodes())
+        for i in range(len(node_list)):
+            node_list[i].idx = i
+    
+    def _get_tree_array_info(self, left_children, right_children, lengths, leaf_class_mapping):
+        if self.children:
+            left_children[self.idx] = self.children[0].idx
+            right_children[self.idx] = self.children[1].idx
+            lengths[self.children[0].idx] = self.lengths[0]
+            lengths[self.children[1].idx] = self.lengths[1]
+            self.children[0]._get_tree_array_info(left_children, right_children, lengths, leaf_class_mapping)
+            self.children[1]._get_tree_array_info(left_children, right_children, lengths, leaf_class_mapping)
+        else:
+            left_children[self.idx] = -1
+            right_children[self.idx] = -1
+            leaf_class_mapping[self.idx] = self.leafID #class info
+        
+    def get_tree_array_info(self):
+        self.label_tree()
+        num_nodes = self.get_num_nodes()
+        left_children = np.zeros(num_nodes, dtype=int)
+        right_children = np.zeros(num_nodes, dtype=int)
+        lengths = np.zeros(num_nodes, dtype=float)
+        leaf_class_mapping = {}
+        self._get_tree_array_info(left_children, right_children, lengths, leaf_class_mapping)
+        return left_children, right_children, lengths, leaf_class_mapping
+    
 def load_data():
     digits = load_digits()
     X, y = digits.data, digits.target
@@ -116,44 +154,46 @@ def calc_edge_lengths_from_dt(clf):
     return lengths    
 
 curr_leaf_num = 0
-def build_newick_from_dt(clf, add_leaf_class_edges = False, match_class_leaves = False):
+def build_newick_from_dt(clf, add_leaf_class_edges = False, match_class_leaves = False, mode="sklearn"):
     global curr_leaf_num
+    if add_leaf_class_edges:
+        assert(mode=="sklearn")
     curr_leaf_num = 0
-    children_left = clf.tree_.children_left #children_left[i] gives the id of the left child of node i
-    children_right = clf.tree_.children_right
-    #print("gini: {}".format(clf.tree_.impurity))
-    if match_class_leaves:
-        leaf_node_ids = [i for i in range(len(clf.tree_.children_left)) if clf.tree_.children_left[i] == -1]
-        def leaf_purity_sort_func(e):
-            return clf.tree_.impurity[e]
-        leaf_node_ids.sort(key=leaf_purity_sort_func)
-        leaf_class_mapping = {}
-        #print("leaf node ids: {}".format(leaf_node_ids))
-        for leaf_id in leaf_node_ids:
-            for _ in range(len(clf.tree_.value[leaf_id][0])):
-                leaf_class = np.argmax(clf.tree_.value[leaf_id][0])
-                if leaf_class not in leaf_class_mapping.values():
-                    leaf_class_mapping[leaf_id] = leaf_class
-                    break
-                else:
-                    #print("leaf class max issue: {}".format(clf.tree_.value[leaf_id][0]))
-                    clf.tree_.value[leaf_id][0][leaf_class] = 0
-                    continue
-        bad_leaf_count = 0
-        for leaf_id in leaf_node_ids:
-            if leaf_id not in leaf_class_mapping.keys():
-                bad_leaf_count += 1
-                for i in range(len(clf.classes_)):
-                    if i not in leaf_class_mapping.values():
-                        leaf_class_mapping[leaf_id] = i
-        print("this decision tree has {} bad leaves".format(bad_leaf_count))
+    if mode == "sklearn":
+        children_left = clf.tree_.children_left #children_left[i] gives the id of the left child of node i
+        children_right = clf.tree_.children_right
+        if match_class_leaves:
+            leaf_node_ids = [i for i in range(len(clf.tree_.children_left)) if clf.tree_.children_left[i] == -1]
+            def leaf_purity_sort_func(e):
+                return clf.tree_.impurity[e]
+            leaf_node_ids.sort(key=leaf_purity_sort_func)
+            leaf_class_mapping = {}
+            for leaf_id in leaf_node_ids:
+                for _ in range(len(clf.tree_.value[leaf_id][0])):
+                    leaf_class = np.argmax(clf.tree_.value[leaf_id][0])
+                    if leaf_class not in leaf_class_mapping.values():
+                        leaf_class_mapping[leaf_id] = leaf_class
+                        break
+                    else:
+                        clf.tree_.value[leaf_id][0][leaf_class] = 0
+                        continue
+            bad_leaf_count = 0
+            for leaf_id in leaf_node_ids:
+                if leaf_id not in leaf_class_mapping.keys():
+                    bad_leaf_count += 1
+                    for i in range(len(clf.classes_)):
+                        if i not in leaf_class_mapping.values():
+                            leaf_class_mapping[leaf_id] = i
+            print("this decision tree has {} bad leaves".format(bad_leaf_count))
+            lengths = calc_edge_lengths_from_dt(clf) #lengths[i] gives the length of the edge to node i from parent
+    else:
+        assert(isinstance(clf, TreeNode))
+        children_left, children_right, lengths, leaf_class_mapping = clf.get_tree_array_info()
 
-    #print("class labels: {}".format(clf.classes_))
-    
-    lengths = calc_edge_lengths_from_dt(clf) #lengths[i] gives the length of the edge to node i from parent
     lengths[0] = 0
     def build_newick_tree_rec(node_id):
         global curr_leaf_num
+        print(node_id)
         left_child = children_left[node_id]
         right_child = children_right[node_id]
         if left_child == -1 and right_child == -1:
@@ -211,13 +251,9 @@ def get_data_class_rep(X, y, classes):
         class_rep_info[i] = np.mean(X_cls, axis=0)
     return class_rep_info
 
-#def get_mean_tree()
-
 def find_matching_parens_idx(string):
-    #print(string)
     stack_height = 1
     for i in range(len(string)):
-        #print(stack_height)
         if string[i] == '(':
             stack_height += 1
         elif string[i] == ')':
@@ -241,12 +277,9 @@ def newick_to_tree_rec(newick_str):
     children = []
     lengths = []
     i = 0
-    #print(newick_str)
     while i < len(newick_str):
-        #print("curr i: {}, curr char: {}".format(i, newick_str[i]))
         if newick_str[i] == "(":
             end_idx = find_matching_parens_idx(newick_str[i+1:])
-            #print("i:{}, end idx:{}".format(newick_str[i + 1], end_idx))
             childNode = newick_to_tree_rec(newick_str[i+1:i+1+end_idx])
             children.append(childNode)
             length, next_idx = get_len_and_next_idx(newick_str, i+1+end_idx + 3)
@@ -256,7 +289,6 @@ def newick_to_tree_rec(newick_str):
             leafID = int(newick_str[i])
             leafNode = TreeNode(leafID=leafID,children=None,lengths=None)
             children.append(leafNode)
-            #print("curr str: {}".format(newick_str))
             length, next_idx = get_len_and_next_idx(newick_str, i + 2)
             lengths.append(length)
             i = next_idx
@@ -264,13 +296,12 @@ def newick_to_tree_rec(newick_str):
 def newick_to_tree(newick_str):
     return newick_to_tree_rec(newick_str[1:-1])
 
-#def find_partition(children, lengths):
-
 def check_tree(node:TreeNode, level=0):
     if node.children is None:
         num_children = 0
     else:
         num_children = len(node.children)
+        print("curr children:{}".format(node.children))
         for i in range(num_children):
             check_tree(node.children[i], level + 1)
     print("level: {}, num_children: {}".format(level, num_children))
@@ -285,7 +316,6 @@ def convert_tree_to_binary_rec(node:TreeNode):
         new_right_node = convert_tree_to_binary_rec(node.children[1])
         return TreeNode(leafID=-1, children=[new_left_node, new_right_node], lengths=node.lengths, binary=True)
     elif len(node.children) > 2:
-        #print("too many children")
         new_left_node = convert_tree_to_binary_rec(node.children[0])
         new_right_node = TreeNode(leafID=-1, children=node.children[1:], lengths=node.lengths[1:])
         new_right_node = convert_tree_to_binary_rec(new_right_node)
@@ -293,8 +323,7 @@ def convert_tree_to_binary_rec(node:TreeNode):
         #total_lengths = node.lengths[0] = sum(new_binary_node.lengths)
         #length1 = node.lengths[0]/ 
         #TODO: might come up with better length reweighing scheme
-        new_lengths = [node.lengths[0], np.mean(node.lengths[1:])] 
-        #print(len(new_children))
+        new_lengths = [node.lengths[0], np.mean(node.lengths[1:])]
         return TreeNode(leafID=-1, children=new_children, lengths=new_lengths, binary=True)
 
 
@@ -305,15 +334,18 @@ def process_feat_info(node, class_reps):
     else:
         thresh = DATA_MIN + (DATA_MAX - DATA_MIN) * (1 - (node.lengths[0]/node.lengths[1]))
         node.threshold = thresh
+        #print("threshold: {}".format(thresh))
         left_leaves = node.get_left_leaves()
         right_leaves = node.get_right_leaves()
-        print("number of left leaves: {}, right leaves: {}".format(len(left_leaves), len(right_leaves)))
+        #print("number of left leaves: {}, right leaves: {}".format(len(left_leaves), len(right_leaves)))
         #get feature that varies the most between left classes and right classes
         left_reps = np.mean(class_reps[left_leaves], axis=0)
         right_reps = np.mean(class_reps[right_leaves], axis=0)
         feat_diff = np.abs(left_reps - right_reps)
         max_diff_feat = np.argmax(feat_diff)
+        #node.feature = np.random.randint(len(feat_diff))
         node.feature = max_diff_feat
+        #print("chosen feature: {}".format(node.feature))
         process_feat_info(node.children[0], class_reps)
         process_feat_info(node.children[1], class_reps)
         return
@@ -324,28 +356,6 @@ def add_pred_info_to_tree(node, X, y):
     process_feat_info(node, class_reps)
     return node
     
-
-
-# def binary_tree_to_sklearn(node:TreeNode, X, y):
-#     num_nodes = node.get_num_nodes()
-#     classes = np.arange(10)
-#     class_reps = get_data_class_rep(X=X, y=y, classes=classes)
-#     clf = tree.DecisionTreeClassifier(max_leaf_nodes=len(class_reps))
-#     clf.fit(X[:NUM_TRAIN], y[:NUM_TRAIN])
-#     t = clf.tree_
-    
-#     print("mean_tree_node_count: {}".format(num_nodes))
-#     print(t.node_count)
-#     t.node_count = num_nodes
-#     print(t.node_count)
-#     # t.children_right = np.zeros(num_nodes)
-#     # t.children_left = np.zeros(num_nodes)
-#     # t.feature = np.zeros(num_nodes)
-#     # t.threshold = np.zeros(num_nodes)
-#     # t.n_node_samples = np.zeros(num_nodes)
-#     # t.impurity = np.zeros(num_nodes)
-
-
 def write_to_tree_dist_program_input(write_all=False, random=False):
     forest_test = find_good_trees(500, random=random)
     nws, trees, scores = zip(*forest_test)
@@ -418,15 +428,20 @@ class_reps = get_data_class_rep(X=X, y=y, classes=classes)
 # good_dist, bad_dist = analyze_tree_dists(path_to_output_file)
 #print("avg intra_good_tree_dist:{}, avg good_to_bad_tree_dist: {}".format(good_dist, bad_dist))
 
+
+
+#MEAN TREE FORMAT EXPERIMENTS BELOW:
 test_newick_str = "((((((1:12.7972272028,8:16.19448754):0.0003516433,2:13.9056052921):0.0004681324,3:9.9702006682,4:13.1786666231,6:15.5331370117):0.000904761,(5:15.0930987257,7:10.6461528477):0.000280585):0.0016585607,9:19.9632479158):0.0048466613,0:6.2155927179)"
 test_tree = newick_to_tree(test_newick_str)
-#check_tree(test_tree)
-#print("----------------------------")
+print("original number of nodes:{}".format(test_tree.get_num_nodes()))
 test_binary_tree = convert_tree_to_binary_rec(test_tree)
+print("binary number of nodes:{}".format(test_binary_tree.get_num_nodes()))
 test_binary_tree = add_pred_info_to_tree(test_binary_tree, X=X, y=y)
+print("processed binary number of nodes:{}".format(test_binary_tree.get_num_nodes()))
 tree_acc = test_binary_tree.eval_tree(X[-50:], y[-50:])
 print("tree_acc: {}".format(tree_acc))
-
-#check_tree(test_binary_tree)
+test_binary_tree.label_tree()
+test_mean_newick = build_newick_from_dt(test_binary_tree, match_class_leaves=True, mode="treenode")
+print("newick_format: {}".format(test_mean_newick))
 
 
