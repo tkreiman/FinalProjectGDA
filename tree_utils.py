@@ -168,6 +168,7 @@ def build_newick_from_dt(clf, add_leaf_class_edges = False, match_class_leaves =
                 return clf.tree_.impurity[e]
             leaf_node_ids.sort(key=leaf_purity_sort_func)
             leaf_class_mapping = {}
+            total_retries = 0
             for leaf_id in leaf_node_ids:
                 for _ in range(len(clf.tree_.value[leaf_id][0])):
                     leaf_class = np.argmax(clf.tree_.value[leaf_id][0])
@@ -175,8 +176,10 @@ def build_newick_from_dt(clf, add_leaf_class_edges = False, match_class_leaves =
                         leaf_class_mapping[leaf_id] = leaf_class
                         break
                     else:
+                        total_retries += 1
                         clf.tree_.value[leaf_id][0][leaf_class] = 0
                         continue
+            print("total class assignment retries: {}".format(total_retries))
             bad_leaf_count = 0
             for leaf_id in leaf_node_ids:
                 if leaf_id not in leaf_class_mapping.keys():
@@ -184,7 +187,7 @@ def build_newick_from_dt(clf, add_leaf_class_edges = False, match_class_leaves =
                     for i in range(len(clf.classes_)):
                         if i not in leaf_class_mapping.values():
                             leaf_class_mapping[leaf_id] = i
-            print("this decision tree has {} bad leaves".format(bad_leaf_count))
+            #print("this decision tree has {} bad leaves".format(bad_leaf_count))
             lengths = calc_edge_lengths_from_dt(clf) #lengths[i] gives the length of the edge to node i from parent
     else:
         assert(isinstance(clf, TreeNode))
@@ -193,7 +196,6 @@ def build_newick_from_dt(clf, add_leaf_class_edges = False, match_class_leaves =
     lengths[0] = 0
     def build_newick_tree_rec(node_id):
         global curr_leaf_num
-        print(node_id)
         left_child = children_left[node_id]
         right_child = children_right[node_id]
         if left_child == -1 and right_child == -1:
@@ -243,6 +245,23 @@ def find_good_trees(bootstrap_number, random=False):
             forest.append([nw, dt, dt.score(Xtst,ytst)])
     return forest
 
+def test_tree_conversion_pipeline(bootstrap_number):
+     indices = bootstrap_sample(bootstrap_number,NUM_TRAIN,len(X))
+     for i in range(bootstrap_number):
+        Xtr = X[indices[i][0]]
+        ytr = y[indices[i][0]]
+        Xtst = X[indices[i][1]]
+        ytst = y[indices[i][1]]
+        dt = tree.DecisionTreeClassifier(max_leaf_nodes=10)
+        dt = dt.fit(Xtr,ytr)
+        nw = build_newick_from_dt(dt, match_class_leaves=True)
+        og_score = dt.score(Xtst,ytst)
+        coverted_dt = newick_to_treenode(nw)
+        new_score = coverted_dt.eval_tree(Xtst,ytst)
+        print("original score: {}, score after conversion: {}".format(og_score, new_score))
+        print("--------------------------")
+
+
 def get_data_class_rep(X, y, classes):
     class_rep_info = np.zeros((len(classes), X.shape[1]), dtype=X.dtype)
     for i, c in enumerate(classes):
@@ -265,6 +284,7 @@ def find_matching_parens_idx(string):
     raise IndexError("no matching parens found!")
 
 def get_len_and_next_idx(newick_str, start_idx):
+    #print(newick_str[start_idx])
     j = start_idx
     while j <= len(newick_str):
         if j == len(newick_str) or newick_str[j] == ',':
@@ -282,11 +302,11 @@ def newick_to_tree_rec(newick_str):
             end_idx = find_matching_parens_idx(newick_str[i+1:])
             childNode = newick_to_tree_rec(newick_str[i+1:i+1+end_idx])
             children.append(childNode)
-            length, next_idx = get_len_and_next_idx(newick_str, i+1+end_idx + 3)
+            length, next_idx = get_len_and_next_idx(newick_str, i+1+end_idx + 2)
             lengths.append(length)
             i = next_idx
         else:
-            leafID = int(newick_str[i])
+            leafID = int(newick_str[i]) #doesn't generalize to multi-digit labels
             leafNode = TreeNode(leafID=leafID,children=None,lengths=None)
             children.append(leafNode)
             length, next_idx = get_len_and_next_idx(newick_str, i + 2)
@@ -294,7 +314,19 @@ def newick_to_tree_rec(newick_str):
             i = next_idx
     return TreeNode(leafID=-1, children=children, lengths=lengths)
 def newick_to_tree(newick_str):
+    if newick_str[-1] == ";":
+        newick_str = newick_str[:-1]
+    print("newick str: {}".format(newick_str))
     return newick_to_tree_rec(newick_str[1:-1])
+
+def newick_to_treenode(newick_str):
+    tree = newick_to_tree(newick_str)
+    print("original number of nodes:{}".format(tree.get_num_nodes()))
+    tree = convert_tree_to_binary_rec(tree)
+    print("binary number of nodes:{}".format(tree.get_num_nodes()))
+    tree = add_pred_info_to_tree(tree, X=X, y=y)
+    print("processed binary number of nodes:{}".format(tree.get_num_nodes()))
+    return tree
 
 def check_tree(node:TreeNode, level=0):
     if node.children is None:
@@ -366,7 +398,7 @@ def write_to_tree_dist_program_input(write_all=False, random=False):
     good_idxs = sorted_idxs[-5:]
     print("bad scores:{}".format(scores[bad_idxs]))
     print("good scores:{}".format(scores[good_idxs]))
-    with open("../gtp_170317/example/random_trees2", "w") as f:
+    with open("../gtp_170317/example/trained_500_best_worst", "w") as f:
         if write_all:
             for i in range(len(nws)):
                 f.write(nws[i])
@@ -382,7 +414,7 @@ def write_to_tree_dist_program_input(write_all=False, random=False):
 def analyze_tree_dists(filename):
     dist_matrix = np.zeros((10, 10))
     with open(filename, "r") as f:
-        num_lines = len(f.readlines())
+        #num_lines = len(f.readlines())
         for line in f:
             if line == "\n":
                 continue
@@ -401,9 +433,15 @@ def analyze_tree_dists(filename):
             intra_good_tree_dist += dist_matrix[i][j]
         for j in range(5, 10):
             good_to_bad_tree_dist += dist_matrix[i][j]
+    intra_bad_tree_dist = 0
+    for i in range(5, 10):
+        for j in range(5, 10):
+            intra_bad_tree_dist += dist_matrix[i][j]
+
     intra_good_tree_dist /= 20
+    intra_bad_tree_dist /= 20
     good_to_bad_tree_dist /= 25
-    return intra_good_tree_dist, good_to_bad_tree_dist
+    return intra_good_tree_dist, good_to_bad_tree_dist, intra_bad_tree_dist
 
 def random_tree_fromdata(X, y):
     # random gaussian array of shape X.shape with values between pix_min and pix_max
@@ -419,29 +457,29 @@ def random_tree_fromdata(X, y):
 X, y, DATA_MIN, DATA_MAX = load_data()
 NUM_TRAIN = int(len(X) * 0.50)
 # print(random_tree_fromdata(X, y))
-classes = np.arange(10)
-class_reps = get_data_class_rep(X=X, y=y, classes=classes)
-#print("class rep info: {}".format(class_reps))
-#write_to_tree_dist_program_input(write_all=True,random=True)
 
-# path_to_output_file = "../gtp_170317/outputs/random_output.txt"
-# good_dist, bad_dist = analyze_tree_dists(path_to_output_file)
-#print("avg intra_good_tree_dist:{}, avg good_to_bad_tree_dist: {}".format(good_dist, bad_dist))
+#write_to_tree_dist_program_input(write_all=False,random=False)
+
+# path_to_output_file = "../gtp_170317/outputs/trained_500_best_worst.txt"
+# good_2_good_dist, good_2_bad_dist, bad_2_bad_dist = analyze_tree_dists(path_to_output_file)
+# print("avg intra_good_tree_dist:{}, avg good_to_bad_tree_dist: {}, avg intra_bad_tree_dist:{}".format(good_2_good_dist, good_2_bad_dist, bad_2_bad_dist))
 
 
 
 #MEAN TREE FORMAT EXPERIMENTS BELOW:
-test_newick_str = "((((((1:12.7972272028,8:16.19448754):0.0003516433,2:13.9056052921):0.0004681324,3:9.9702006682,4:13.1786666231,6:15.5331370117):0.000904761,(5:15.0930987257,7:10.6461528477):0.000280585):0.0016585607,9:19.9632479158):0.0048466613,0:6.2155927179)"
-test_tree = newick_to_tree(test_newick_str)
-print("original number of nodes:{}".format(test_tree.get_num_nodes()))
-test_binary_tree = convert_tree_to_binary_rec(test_tree)
-print("binary number of nodes:{}".format(test_binary_tree.get_num_nodes()))
-test_binary_tree = add_pred_info_to_tree(test_binary_tree, X=X, y=y)
-print("processed binary number of nodes:{}".format(test_binary_tree.get_num_nodes()))
-tree_acc = test_binary_tree.eval_tree(X[-50:], y[-50:])
-print("tree_acc: {}".format(tree_acc))
-test_binary_tree.label_tree()
-test_mean_newick = build_newick_from_dt(test_binary_tree, match_class_leaves=True, mode="treenode")
-print("newick_format: {}".format(test_mean_newick))
+# test_newick_str = "((((((1:12.7972272028,8:16.19448754):0.0003516433,2:13.9056052921):0.0004681324,3:9.9702006682,4:13.1786666231,6:15.5331370117):0.000904761,(5:15.0930987257,7:10.6461528477):0.000280585):0.0016585607,9:19.9632479158):0.0048466613,0:6.2155927179)"
+# test_tree = newick_to_tree(test_newick_str)
+# print("original number of nodes:{}".format(test_tree.get_num_nodes()))
+# test_binary_tree = convert_tree_to_binary_rec(test_tree)
+# print("binary number of nodes:{}".format(test_binary_tree.get_num_nodes()))
+# test_binary_tree = add_pred_info_to_tree(test_binary_tree, X=X, y=y)
+# print("processed binary number of nodes:{}".format(test_binary_tree.get_num_nodes()))
+# tree_acc = test_binary_tree.eval_tree(X[-50:], y[-50:])
+# print("tree_acc: {}".format(tree_acc))
+# test_binary_tree.label_tree()
+# test_mean_newick = build_newick_from_dt(test_binary_tree, match_class_leaves=True, mode="treenode")
+# print("newick_format: {}".format(test_mean_newick))
 
+#CONVERSION TEST PERFORMANCE
+test_tree_conversion_pipeline(5)
 
