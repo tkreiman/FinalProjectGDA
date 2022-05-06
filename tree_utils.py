@@ -284,7 +284,6 @@ def find_matching_parens_idx(string):
     raise IndexError("no matching parens found!")
 
 def get_len_and_next_idx(newick_str, start_idx):
-    #print(newick_str[start_idx])
     j = start_idx
     while j <= len(newick_str):
         if j == len(newick_str) or newick_str[j] == ',':
