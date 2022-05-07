@@ -6,6 +6,7 @@ from sklearn.metrics import classification_report
 from sklearn.model_selection import train_test_split
 from numpy import random
 import matplotlib.pyplot as plt
+import scipy
 
 from sklearn.datasets import load_digits
 
@@ -179,7 +180,7 @@ def build_newick_from_dt(clf, add_leaf_class_edges = False, match_class_leaves =
                         total_retries += 1
                         clf.tree_.value[leaf_id][0][leaf_class] = 0
                         continue
-            print("total class assignment retries: {}".format(total_retries))
+            #print("total class assignment retries: {}".format(total_retries))
             bad_leaf_count = 0
             for leaf_id in leaf_node_ids:
                 if leaf_id not in leaf_class_mapping.keys():
@@ -246,8 +247,9 @@ def find_good_trees(bootstrap_number, random=False):
     return forest
 
 def test_tree_conversion_pipeline(bootstrap_number):
-     indices = bootstrap_sample(bootstrap_number,NUM_TRAIN,len(X))
-     for i in range(bootstrap_number):
+    indices = bootstrap_sample(bootstrap_number,NUM_TRAIN,len(X))
+    percent_diffs = np.zeros(bootstrap_number)
+    for i in range(bootstrap_number):
         Xtr = X[indices[i][0]]
         ytr = y[indices[i][0]]
         Xtst = X[indices[i][1]]
@@ -256,10 +258,13 @@ def test_tree_conversion_pipeline(bootstrap_number):
         dt = dt.fit(Xtr,ytr)
         nw = build_newick_from_dt(dt, match_class_leaves=True)
         og_score = dt.score(Xtst,ytst)
-        coverted_dt = newick_to_treenode(nw)
+        coverted_dt = newick_to_treenode(nw, Xtr, ytr)
         new_score = coverted_dt.eval_tree(Xtst,ytst)
-        print("original score: {}, score after conversion: {}".format(og_score, new_score))
+        percent_diff = (new_score - og_score)/og_score
+        print("original score: {}, score after conversion: {}, percent_diff: {}".format(og_score, new_score, percent_diff))
+        percent_diffs[i] = percent_diff
         print("--------------------------")
+    print("average percent accuracy diff due to conversion: {}".format(np.mean(percent_diffs)))
 
 
 def get_data_class_rep(X, y, classes):
@@ -312,18 +317,19 @@ def newick_to_tree_rec(newick_str):
             lengths.append(length)
             i = next_idx
     return TreeNode(leafID=-1, children=children, lengths=lengths)
+
 def newick_to_tree(newick_str):
     if newick_str[-1] == ";":
         newick_str = newick_str[:-1]
     print("newick str: {}".format(newick_str))
     return newick_to_tree_rec(newick_str[1:-1])
 
-def newick_to_treenode(newick_str):
+def newick_to_treenode(newick_str, Xtr, ytr):
     tree = newick_to_tree(newick_str)
     print("original number of nodes:{}".format(tree.get_num_nodes()))
     tree = convert_tree_to_binary_rec(tree)
     print("binary number of nodes:{}".format(tree.get_num_nodes()))
-    tree = add_pred_info_to_tree(tree, X=X, y=y)
+    tree = add_pred_info_to_tree(tree, X=Xtr, y=ytr)
     print("processed binary number of nodes:{}".format(tree.get_num_nodes()))
     return tree
 
@@ -337,7 +343,6 @@ def check_tree(node:TreeNode, level=0):
             check_tree(node.children[i], level + 1)
     print("level: {}, num_children: {}".format(level, num_children))
     
-
 def convert_tree_to_binary_rec(node:TreeNode):
     if node.children is None:
         node.binary = True
@@ -357,60 +362,92 @@ def convert_tree_to_binary_rec(node:TreeNode):
         new_lengths = [node.lengths[0], np.mean(node.lengths[1:])]
         return TreeNode(leafID=-1, children=new_children, lengths=new_lengths, binary=True)
 
-
-def process_feat_info(node, class_reps):
-    assert(node.binary)
-    if node.children is None:
-        return
-    else:
-        thresh = DATA_MIN + (DATA_MAX - DATA_MIN) * (1 - (node.lengths[0]/node.lengths[1]))
-        node.threshold = thresh
-        #print("threshold: {}".format(thresh))
-        left_leaves = node.get_left_leaves()
-        right_leaves = node.get_right_leaves()
-        #print("number of left leaves: {}, right leaves: {}".format(len(left_leaves), len(right_leaves)))
-        #get feature that varies the most between left classes and right classes
+def choose_feature(X, y, left_leaves, right_leaves, mode="max_var", class_reps=None, theshold=None):
+    if mode == "max_var":
+        assert(class_reps is not None)
         left_reps = np.mean(class_reps[left_leaves], axis=0)
         right_reps = np.mean(class_reps[right_leaves], axis=0)
         feat_diff = np.abs(left_reps - right_reps)
         max_diff_feat = np.argmax(feat_diff)
+        return max_diff_feat
+    elif mode == "entropy":
+        left_idxs = [i for i in range(len(X)) if y[i] in left_leaves]
+        right_idxs = [i for i in range(len(X)) if y[i] in right_leaves]
+        min_idx_len = min(len(left_idxs), len(right_idxs))
+        left_idxs = left_idxs[:min_idx_len]
+        right_idxs = right_idxs[:min_idx_len]
+        left_data = X[left_idxs]
+        right_data = X[right_idxs]
+        feat_entropy_info = scipy.stats.entropy(pk=left_data, qk=right_data, axis=0)
+        min_entropy_feat = np.argmin(feat_entropy_info)
+        return min_entropy_feat
+    elif mode == "pred_potential":
+        assert (theshold is not None)
+        feat_correct = np.zeros(X.shape[1])
+        for f in range(X.shape[1]):
+            for i in range(X.shape[0]):
+                if X[i][f] < theshold:
+                    if y[i] in left_leaves:
+                        feat_correct[f] += 1
+                else:
+                    if y[i] in right_leaves:
+                        feat_correct[f] += 1
+        return np.argmax(feat_correct)        
+    else:
+        raise ValueError("Mode not supported")
+
+def process_feat_info(node, X, y, class_reps):
+    assert(node.binary)
+    if node.children is None:
+        return
+    else:
+        #thresh = DATA_MIN + (DATA_MAX - DATA_MIN) * (1 - (node.lengths[0]/node.lengths[1]))
+        #thresh = DATA_MIN + node.lengths[0]
+        thresh = ((DATA_MIN + node.lengths[0]) +  (DATA_MAX - node.lengths[1]))/2
+        node.threshold = thresh
+        left_leaves = node.get_left_leaves()
+        right_leaves = node.get_right_leaves()
+        #get feature that varies the most between left classes and right classes
         #node.feature = np.random.randint(len(feat_diff))
-        node.feature = max_diff_feat
-        #print("chosen feature: {}".format(node.feature))
-        process_feat_info(node.children[0], class_reps)
-        process_feat_info(node.children[1], class_reps)
+        node.feature = choose_feature(X, y, left_leaves, right_leaves, mode="pred_potential", class_reps=class_reps, theshold=thresh)
+        process_feat_info(node.children[0], X, y, class_reps)
+        process_feat_info(node.children[1], X, y, class_reps)
         return
     
 def add_pred_info_to_tree(node, X, y):
     classes = np.arange(10)
     class_reps = get_data_class_rep(X=X, y=y, classes=classes)
-    process_feat_info(node, class_reps)
+    process_feat_info(node, X, y, class_reps)
     return node
     
-def write_to_tree_dist_program_input(write_all=False, random=False):
+def write_to_tree_dist_program_input(mode="outliers", random=False):
+    #mode = "all", "outliers", "good", or "bad"
     forest_test = find_good_trees(500, random=random)
     nws, trees, scores = zip(*forest_test)
-    print(min(scores), max(scores))
     scores = np.array(scores)
+    print("average score: {}".format(np.mean(scores)))
     sorted_idxs = np.argsort(scores)
     bad_idxs = sorted_idxs[:5]
     good_idxs = sorted_idxs[-5:]
     print("bad scores:{}".format(scores[bad_idxs]))
     print("good scores:{}".format(scores[good_idxs]))
-    with open("../gtp_170317/example/trained_500_best_worst", "w") as f:
-        if write_all:
+    print("average good score: {}".format(np.mean(scores[good_idxs])))
+    with open("../gtp_170317/example/final_5_best", "w") as f:
+        if mode == "all":
             for i in range(len(nws)):
                 f.write(nws[i])
                 f.write('\n')
         else:
-            for i in range(len(good_idxs)):
-                f.write(nws[good_idxs[i]])
-                f.write('\n')
-            for i in range(len(bad_idxs)):
-                f.write(nws[bad_idxs[i]])
-                f.write('\n')
+            if mode == "outliers" or mode == "good":
+                for i in range(len(good_idxs)):
+                    f.write(nws[good_idxs[i]])
+                    f.write('\n')
+            if mode == "outliers" or mode == "bad":
+                for i in range(len(bad_idxs)):
+                    f.write(nws[bad_idxs[i]])
+                    f.write('\n')
   
-def analyze_tree_dists(filename):
+def analyze_tree_dists(filename, all_dists=False):
     dist_matrix = np.zeros((10, 10))
     with open(filename, "r") as f:
         #num_lines = len(f.readlines())
@@ -423,25 +460,33 @@ def analyze_tree_dists(filename):
             dist = float(line[2])
             dist_matrix[t1][t2] = dist
             dist_matrix[t2][t1] = dist
-    print(dist_matrix)
-    print("distances to good mean tree from random trees: {}".format(dist_matrix[0]))
-    intra_good_tree_dist = 0
-    good_to_bad_tree_dist = 0
-    for i in range(5):
-        for j in range(5):
-            intra_good_tree_dist += dist_matrix[i][j]
-        for j in range(5, 10):
-            good_to_bad_tree_dist += dist_matrix[i][j]
-    intra_bad_tree_dist = 0
-    for i in range(5, 10):
-        for j in range(5, 10):
-            intra_bad_tree_dist += dist_matrix[i][j]
+    #print(dist_matrix)
+    if all_dists:
+        tot_dist = 0
+        for i in range(10):
+            for j in range(10):
+                tot_dist += dist_matrix[i][j]
+        tot_dist /= 90
+        print("total distance between trees: {}".format(tot_dist))  
+    else:
+        #print("distances to good mean tree from random trees: {}".format(dist_matrix[0]))
+        intra_good_tree_dist = 0
+        good_to_bad_tree_dist = 0
+        for i in range(5):
+            for j in range(5):
+                intra_good_tree_dist += dist_matrix[i][j]
+            for j in range(5, 10):
+                good_to_bad_tree_dist += dist_matrix[i][j]
+        intra_bad_tree_dist = 0
+        for i in range(5, 10):
+            for j in range(5, 10):
+                intra_bad_tree_dist += dist_matrix[i][j]
 
-    intra_good_tree_dist /= 20
-    intra_bad_tree_dist /= 20
-    good_to_bad_tree_dist /= 25
-    return intra_good_tree_dist, good_to_bad_tree_dist, intra_bad_tree_dist
-
+        intra_good_tree_dist /= 20
+        intra_bad_tree_dist /= 20
+        good_to_bad_tree_dist /= 25
+        print("avg intra_good_tree_dist:{}, avg good_to_bad_tree_dist: {}, avg intra_bad_tree_dist:{}".format(intra_good_tree_dist, good_to_bad_tree_dist, intra_bad_tree_dist))
+    
 def random_tree_fromdata(X, y):
     # random gaussian array of shape X.shape with values between pix_min and pix_max
     X_rand = np.random.randn(*X.shape) * 3
@@ -454,31 +499,34 @@ def random_tree_fromdata(X, y):
     return clf
 
 X, y, DATA_MIN, DATA_MAX = load_data()
-NUM_TRAIN = int(len(X) * 0.50)
-# print(random_tree_fromdata(X, y))
+# data_std = np.sqrt(np.mean(np.var(X, axis=0)))
+# print("data mean: {}, data std: {}".format(np.mean(X), data_std))
+test_X = X[-100:]
+test_y = y[-100:]
+X = X[:-100]
+y = y[:-100]
 
-#write_to_tree_dist_program_input(write_all=False,random=False)
+NUM_TRAIN = int(len(X) * 0.5)
 
-# path_to_output_file = "../gtp_170317/outputs/trained_500_best_worst.txt"
-# good_2_good_dist, good_2_bad_dist, bad_2_bad_dist = analyze_tree_dists(path_to_output_file)
-# print("avg intra_good_tree_dist:{}, avg good_to_bad_tree_dist: {}, avg intra_bad_tree_dist:{}".format(good_2_good_dist, good_2_bad_dist, bad_2_bad_dist))
+# path_to_output_file = "../gtp_170317/outputs/random_10"
+# analyze_tree_dists(path_to_output_file, all_dists=True)
 
+#write_to_tree_dist_program_input(mode="good",random=False)
 
 
 #MEAN TREE FORMAT EXPERIMENTS BELOW:
-# test_newick_str = "((((((1:12.7972272028,8:16.19448754):0.0003516433,2:13.9056052921):0.0004681324,3:9.9702006682,4:13.1786666231,6:15.5331370117):0.000904761,(5:15.0930987257,7:10.6461528477):0.000280585):0.0016585607,9:19.9632479158):0.0048466613,0:6.2155927179)"
-# test_tree = newick_to_tree(test_newick_str)
-# print("original number of nodes:{}".format(test_tree.get_num_nodes()))
-# test_binary_tree = convert_tree_to_binary_rec(test_tree)
-# print("binary number of nodes:{}".format(test_binary_tree.get_num_nodes()))
-# test_binary_tree = add_pred_info_to_tree(test_binary_tree, X=X, y=y)
-# print("processed binary number of nodes:{}".format(test_binary_tree.get_num_nodes()))
-# tree_acc = test_binary_tree.eval_tree(X[-50:], y[-50:])
-# print("tree_acc: {}".format(tree_acc))
+mean_newick = "(((((((1:8.0217932068,8:20.3863713218):7.8439513396,2:12.8791334299):7.9591532337,4:16.432357059):5.9429434874,7:6.69057821):5.7858385669,(3:7.9174358111,9:21.0825641889):7.8720193078):6.8763499013,0:3.6980332976):15.6004908374,(5:16.2160152503,6:13.9161482085):3.8111437655)"
+indices = bootstrap_sample(1, NUM_TRAIN, len(X))
+Xtr = X[indices[0][0]]
+ytr = y[indices[0][0]]
+mean_tree = newick_to_treenode(mean_newick, Xtr, ytr)
+tree_acc = mean_tree.eval_tree(test_X, test_y)
+print("tree_acc: {}".format(tree_acc))
+
 # test_binary_tree.label_tree()
 # test_mean_newick = build_newick_from_dt(test_binary_tree, match_class_leaves=True, mode="treenode")
 # print("newick_format: {}".format(test_mean_newick))
 
 #CONVERSION TEST PERFORMANCE
-test_tree_conversion_pipeline(5)
+#test_tree_conversion_pipeline(50)
 
