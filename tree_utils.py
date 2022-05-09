@@ -72,6 +72,8 @@ class TreeNode:
     def eval_tree(self, X_test, y_test):
         preds = self.batch_predict(X_test)
         num_right = 0
+        print(num_right)
+        print(len(preds), len(y_test), len(X_test))
         for i in range(len(preds)):
             if preds[i] == y_test[i]:
                 num_right += 1
@@ -266,7 +268,6 @@ def test_tree_conversion_pipeline(bootstrap_number):
         print("--------------------------")
     print("average percent accuracy diff due to conversion: {}".format(np.mean(percent_diffs)))
 
-
 def get_data_class_rep(X, y, classes):
     class_rep_info = np.zeros((len(classes), X.shape[1]), dtype=X.dtype)
     for i, c in enumerate(classes):
@@ -356,9 +357,6 @@ def convert_tree_to_binary_rec(node:TreeNode):
         new_right_node = TreeNode(leafID=-1, children=node.children[1:], lengths=node.lengths[1:])
         new_right_node = convert_tree_to_binary_rec(new_right_node)
         new_children = [new_left_node, new_right_node]
-        #total_lengths = node.lengths[0] = sum(new_binary_node.lengths)
-        #length1 = node.lengths[0]/ 
-        #TODO: might come up with better length reweighing scheme
         new_lengths = [node.lengths[0], np.mean(node.lengths[1:])]
         return TreeNode(leafID=-1, children=new_children, lengths=new_lengths, binary=True)
 
@@ -401,14 +399,10 @@ def process_feat_info(node, X, y, class_reps):
     if node.children is None:
         return
     else:
-        #thresh = DATA_MIN + (DATA_MAX - DATA_MIN) * (1 - (node.lengths[0]/node.lengths[1]))
-        #thresh = DATA_MIN + node.lengths[0]
         thresh = ((DATA_MIN + node.lengths[0]) +  (DATA_MAX - node.lengths[1]))/2
         node.threshold = thresh
         left_leaves = node.get_left_leaves()
         right_leaves = node.get_right_leaves()
-        #get feature that varies the most between left classes and right classes
-        #node.feature = np.random.randint(len(feat_diff))
         node.feature = choose_feature(X, y, left_leaves, right_leaves, mode="pred_potential", class_reps=class_reps, theshold=thresh)
         process_feat_info(node.children[0], X, y, class_reps)
         process_feat_info(node.children[1], X, y, class_reps)
@@ -422,7 +416,7 @@ def add_pred_info_to_tree(node, X, y):
     
 def write_to_tree_dist_program_input(mode="outliers", random=False):
     #mode = "all", "outliers", "good", or "bad"
-    forest_test = find_good_trees(500, random=random)
+    forest_test = find_good_trees(5, random=random)
     nws, trees, scores = zip(*forest_test)
     scores = np.array(scores)
     print("average score: {}".format(np.mean(scores)))
@@ -432,7 +426,7 @@ def write_to_tree_dist_program_input(mode="outliers", random=False):
     print("bad scores:{}".format(scores[bad_idxs]))
     print("good scores:{}".format(scores[good_idxs]))
     print("average good score: {}".format(np.mean(scores[good_idxs])))
-    with open("../gtp_170317/example/final_5_best", "w") as f:
+    with open("../gtp_170317/example/final_5_random", "w") as f:
         if mode == "all":
             for i in range(len(nws)):
                 f.write(nws[i])
@@ -511,17 +505,17 @@ NUM_TRAIN = int(len(X) * 0.5)
 # path_to_output_file = "../gtp_170317/outputs/random_10"
 # analyze_tree_dists(path_to_output_file, all_dists=True)
 
-#write_to_tree_dist_program_input(mode="good",random=False)
+#write_to_tree_dist_program_input(mode="all",random=True)
 
 
 #MEAN TREE FORMAT EXPERIMENTS BELOW:
-mean_newick = "(((((((1:8.0217932068,8:20.3863713218):7.8439513396,2:12.8791334299):7.9591532337,4:16.432357059):5.9429434874,7:6.69057821):5.7858385669,(3:7.9174358111,9:21.0825641889):7.8720193078):6.8763499013,0:3.6980332976):15.6004908374,(5:16.2160152503,6:13.9161482085):3.8111437655)"
-indices = bootstrap_sample(1, NUM_TRAIN, len(X))
-Xtr = X[indices[0][0]]
-ytr = y[indices[0][0]]
-mean_tree = newick_to_treenode(mean_newick, Xtr, ytr)
-tree_acc = mean_tree.eval_tree(test_X, test_y)
-print("tree_acc: {}".format(tree_acc))
+# mean_newick = "((((((0:10.992344951,8:18.3469999877):0.0055844803,3:11.2841961677):0.0023049787,1:12.4539381766):0.0013692922,6:13.6323866119):0.0019777971,(2:12.3960489787,7:16.6629964286):0.0079167817):0.0028297773,((4:16.3060502795,5:14.870542213):0.0020189038,9:10.4676122362):0.0008103202)"
+# indices = bootstrap_sample(1, NUM_TRAIN, len(X))
+# Xtr = X[indices[0][0]]
+# ytr = y[indices[0][0]]
+# mean_tree = newick_to_treenode(mean_newick, Xtr, ytr)
+# tree_acc = mean_tree.eval_tree(test_X, test_y)
+# print("tree_acc: {}".format(tree_acc))
 
 # test_binary_tree.label_tree()
 # test_mean_newick = build_newick_from_dt(test_binary_tree, match_class_leaves=True, mode="treenode")
@@ -529,4 +523,5 @@ print("tree_acc: {}".format(tree_acc))
 
 #CONVERSION TEST PERFORMANCE
 #test_tree_conversion_pipeline(50)
+
 
